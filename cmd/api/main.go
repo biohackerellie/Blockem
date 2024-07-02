@@ -1,11 +1,11 @@
-package main
+package api
 
 import (
 	"Blockem/internal/server"
 	"fmt"
 )
 
-func main() {
+func api() {
 
 	server := server.NewServer()
 

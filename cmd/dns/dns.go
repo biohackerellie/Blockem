@@ -1,12 +1,37 @@
-package dns
+package main
 
 import (
 	"github.com/miekg/dns"
 	"log"
 	"net"
+	"strings"
 )
 
+var blockList = []string{
+	"example.com",
+	"pornhub.com",
+}
 
+var upstreamServer = "8.8.8.8"
+
+func isBlocked(domain string) bool {
+	for _, blockedDomain := range blockList {
+		if strings.Contains(domain, blockedDomain) {
+			return true
+		}
+	}
+	return false
+}
+
+func forwardRequest(r *dns.Msg) (*dns.Msg, error) {
+	c := new(dns.Client)
+	in, _, err := c.Exchange(r, upstreamServer)
+	if err != nil {
+		return nil, err
+	}
+	return in, nil
+
+}
 
 func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	msg := dns.Msg{}
@@ -14,18 +39,21 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	msg.Authoritative = true
 	log.Printf("Received query for %s\n", r.Question[0].Name)
 	for _, q := range r.Question {
-		switch q.Qtype {
-		case dns.TypeA:
-			rr := &dns.A{
-				Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 0},
-				A: net.ParseIP("127.0.0.1")
+		if isBlocked(q.Name) {
+			msg.Rcode = dns.RcodeNameError
+		} else {
+			resp, err := forwardRequest(r)
+			if err != nil {
+				log.Printf("Error forwarding request: %s\n", err)
+				return
+
 			}
-			msg.Answer = append(msg.Answer, rr)
+			w.WriteMsg(resp)
+			return
 		}
-	} 
+	}
 	w.WriteMsg(&msg)
 }
-
 
 func main() {
 	dns.HandleFunc(".", handleDNSRequest)
