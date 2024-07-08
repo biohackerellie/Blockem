@@ -4,6 +4,7 @@ go 1.22.4
 
 require (
 	github.com/creasty/defaults v1.7.0
+	github.com/google/uuid v1.6.0
 	github.com/mattn/go-colorable v0.1.13
 	github.com/miekg/dns v1.1.61
 	github.com/sirupsen/logrus v1.9.3

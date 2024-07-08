@@ -1,18 +1,26 @@
 package server
 
 import (
+	"Blockem/log"
+	"Blockem/model"
 	"Blockem/util"
 	"context"
 	"fmt"
-	"log"
 	"net"
 	"strings"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/miekg/dns"
+	"github.com/sirupsen/logrus"
 )
 
 type Server struct {
 	dnsServers []*dns.Server
+}
+
+func logger() *logrus.Entry {
+	return log.PrefixedLog("server")
 }
 
 func getServerAddress(addr string) string {
@@ -101,23 +109,55 @@ func extractClientIDFromHost(hostName string) string {
 	return ""
 }
 
-
 func newRequest(
 	ctx context.Context,
 	clientIP net.IP, clientID string,
 	protocol model.RequestProtocol, request *dns.Msg,
-) (context.Context ) {
-  ctx := context.WithValue(ctx, {
-	"req_id": uuid.New().String(),
-	"question": util.QuestionToString(request.Question),
-	})	
+) (context.Context, *model.Request) {
+	ctx, logger := log.CtxWithFields(ctx, logrus.Fields{
+		"req_id":    uuid.New().String(),
+		"question":  util.QuestionToString(request.Question),
+		"client_ip": clientIP,
+	})
+
+	logger.WithFields(logrus.Fields{
+		"client_request_id": request.Id,
+		"client_id":         clientID,
+		"protocol":          protocol,
+	}).Trace("new request")
+
+	req := model.Request{
+		ClientIP:        clientIP,
+		RequestClientID: clientID,
+		Protocol:        protocol,
+		Req:             request,
+		RequestTS:       time.Now(),
+	}
+
+	return ctx, &req
 }
 
+func newRequestFromDNS(ctx context.Context, w dns.ResponseWriter, msg *dns.Msg) (context.Context, *model.Request) {
+	var (
+		clientIP net.IP
+		protocol model.RequestProtocol
+	)
+
+	if w != nil {
+		clientIP, protocol = resolveClientIPAndProtocol(w.RemoteAddr())
+	}
+
+	var clientID string
+	if con, ok := w.(dns.ConnectionStater); ok && con.ConnectionState() != nil {
+		clientID = extractClientIDFromHost(con.ConnectionState().ServerName)
+	}
+	return newRequest(ctx, clientIP, clientID, protocol, msg)
+}
 
 func (s *Server) OnRequest(ctx context.Context, w dns.ResponseWriter, msg *dns.Msg) {
 	ctx, request := newRequestFromDNS(ctx, w, msg)
 
-	s.handleReq
+	s.handleReq(ctx, request, w)
 }
 
 func isBlocked(domain string) bool {
@@ -129,7 +169,12 @@ func isBlocked(domain string) bool {
 	return false
 }
 
-func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
+type msgWriter interface {
+	WriteMsg(msg *dns.Msg) error
+}
+
+func (s *Server) handleReq(ctx context.Context, request *model.Request, w msgWriter) {
+	response, err := s.resolve(ctx, request)
 	msg := dns.Msg{}
 	msg.SetReply(r)
 	msg.Authoritative = true
@@ -150,9 +195,14 @@ func handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	w.WriteMsg(&msg)
 }
 
-var blockList = []string{
-	"example.com",
-	"pornhub.com",
-}
-
 var upstreamServer = "8.8.8.8"
+
+func resolveClientIPAndProtocol(addr net.Addr) (ip net.IP, protocol model.RequestProtocol) {
+	switch a := addr.(type) {
+	case *net.UDPAddr:
+		return a.IP, model.RequestProtocolUDP
+	case *net.TCPAddr:
+		return a.IP, model.RequestProtocolTCP
+	}
+	return nil, model.RequestProtocolUDP
+}
